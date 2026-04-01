@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-SCRIPT_PY="$SCRIPT_DIR/chat_patch_v46_phase6.py"
+SCRIPT_PY="$SCRIPT_DIR/chat_patch_v47_phase7.py"
 
 usage() {
   cat <<'EOF'
@@ -16,6 +16,7 @@ Usage:
   chat_patch lang-find-broken [lang]
   chat_patch lang-audit [lang]
   chat_patch lang-fix-broken <lang>
+  chat_patch lang-check-key "cle-ou-message"
   chat_patch apply
   chat_patch help
 
@@ -28,6 +29,7 @@ Commandes:
   lang-find-broken   détecte les entrées suspectes (mojibake, placeholders, caractères cassés)
   lang-audit         produit un audit global des fichiers de langue
   lang-fix-broken    supprime ou répare automatiquement les entrées cassées
+  lang-check-key     relie le moteur C++ aux fichiers de langue et propose les actions adaptées
   apply              applique la dernière preview préparée
   help               affiche cette aide
 
@@ -44,6 +46,8 @@ Exemples:
   chat_patch lang-audit
   chat_patch lang-audit en
   chat_patch lang-fix-broken en
+
+  chat_patch lang-check-key "Instrucción no válida."
 
   chat_patch apply
 EOF
@@ -76,6 +80,9 @@ case "$cmd" in
     ;;
   lang-fix-broken)
     exec "$PYTHON_BIN" "$SCRIPT_PY" lang-fix-broken "$@"
+    ;;
+  lang-check-key)
+    exec "$PYTHON_BIN" "$SCRIPT_PY" lang-check-key "$@"
     ;;
   apply)
     exec "$PYTHON_BIN" "$SCRIPT_PY" apply "$@"
