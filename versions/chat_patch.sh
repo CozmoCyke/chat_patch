@@ -8,6 +8,8 @@ SCRIPT_PY="$SCRIPT_DIR/chat_patch_v474_phase7.py"
 usage() {
   cat <<'EOF'
 Usage:
+  chat_patch extract-strings <target>
+  chat_patch pseint-patcher <batchfile>
   chat_patch pseint-find "chaine"
   chat_patch pseint-replace "chaine"
   chat_patch lang-find "cle"
@@ -36,6 +38,9 @@ Commandes:
   help               affiche cette aide
 
 Exemples:
+  chat_patch extract-strings wxPSeInt/mxMainWindow.cpp
+  chat_patch pseint-patcher extract_strings_ALL_EN.txt
+
   chat_patch pseint-find "Instrucción no válida."
   chat_patch pseint-replace "Instrucción no válida."
 
@@ -59,6 +64,12 @@ cmd="${1:-help}"
 shift || true
 
 case "$cmd" in
+  extract-strings)
+    exec "$PYTHON_BIN" "$SCRIPT_PY" extract-strings "$@"
+    ;;
+  pseint-patcher)
+    exec "$PYTHON_BIN" "$SCRIPT_PY" pseint-patcher "$@"
+    ;;
   pseint-find)
     exec "$PYTHON_BIN" "$SCRIPT_PY" pseint-find "$@"
     ;;

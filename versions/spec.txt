@@ -1,0 +1,529 @@
+Voici une spécification simple et solide pour ton pipeline.
+
+# 1. Nouvelles commandes
+
+Je te propose ces commandes :
+
+```text
+chat_patch extract-strings <fichier-ou-dossier>
+chat_patch extract-strings-merge <glob-ou-dossier>
+chat_patch pseint-patcher <batchfile>
+```
+
+Et plus tard éventuellement :
+
+```text
+chat_patch extract-strings-audit <batchfile>
+chat_patch extract-strings-translate-template <batchfile>
+```
+
+---
+
+# 2. But de chaque commande
+
+## `extract-strings`
+
+Scanne un fichier source ou un groupe de fichiers, extrait les chaînes candidates espagnoles, et produit un fichier :
+
+```text
+extract_strings_<nom_cible>.txt
+```
+
+## `extract-strings-merge`
+
+Fusionne plusieurs fichiers `extract_strings_*.txt` validés ou enrichis en un seul batch global.
+
+## `pseint-patcher`
+
+Lit un batch enrichi et applique les patches de façon interactive :
+
+* preview code
+* preview insertion dans `en.txt`
+* confirmation
+* stats finales
+
+---
+
+# 3. Format des fichiers
+
+## 3.1. Fichier brut extrait
+
+Format recommandé :
+
+```text
+source|normalized_key|file|line
+```
+
+Exemple :
+
+```text
+"Escribir"|escribir|main.cpp|123
+"Instrucción no válida."|instruccion no valida|parser.cpp|456
+"Guardar Como..."|guardar como|wxPSeInt/mxMainWindow.cpp|262
+```
+
+## 3.2. Fichier enrichi prêt à patcher
+
+Format :
+
+```text
+source|normalized_key|file|line|english|status
+```
+
+Exemple :
+
+```text
+"Escribir"|escribir|main.cpp|123|Write|READY
+"Instrucción no válida."|instruccion no valida|parser.cpp|456|Invalid instruction.|READY
+"Generar Log"|generar log|foo.cpp|88|Generate Log|SKIP
+```
+
+Valeurs possibles de `status` :
+
+* `READY`
+* `SKIP`
+* `DUPLICATE`
+* `NEEDS_CONTEXT`
+
+## 3.3. Fichier merge global
+
+Nom conseillé :
+
+```text
+extract_strings_ALL_EN.txt
+```
+
+Même format que le fichier enrichi.
+
+---
+
+# 4. Règles d’extraction
+
+`extract-strings` doit extraire uniquement les chaînes plausiblement localisables.
+
+## À inclure
+
+* chaînes littérales entre guillemets
+* chaînes non vides
+* chaînes contenant du texte humain visible
+* chaînes espagnoles enfouies dans le code
+* labels, messages d’erreur, menus, aides courtes
+
+## À exclure
+
+* commentaires
+* chaînes vides
+* chemins de fichiers
+* extensions
+* noms techniques évidents
+* fragments de debug trop techniques
+* chaînes déjà passées par un mécanisme de localisation
+* morceaux trop courts sans sens UI
+* format strings purement structurelles
+
+## Règles heuristiques utiles
+
+Ignorer si :
+
+* aucune lettre
+* ressemble à un chemin
+* ressemble à une clé déjà abstraite
+* ressemble à un nom de variable
+* contient surtout symboles ou code
+
+Marquer comme candidat si :
+
+* présence de mots espagnols fréquents
+* ponctuation de message UI
+* phrase lisible
+* label de menu/bouton
+
+---
+
+# 5. Sortie de `extract-strings`
+
+## Commande
+
+```bash
+chat_patch extract-strings wxPSeInt/mxMainWindow.cpp
+```
+
+## Fichier produit
+
+```text
+extract_strings_mxMainWindow_cpp.txt
+```
+
+## Contenu
+
+```text
+"Guardar Como..."|guardar como|wxPSeInt/mxMainWindow.cpp|262
+"Verificar Sintaxis"|verificar sintaxis|wxPSeInt/mxMainWindow.cpp|350
+"Ayuda rápida"|ayuda rapida|wxPSeInt/mxMainWindow.cpp|358
+```
+
+## Console
+
+Le script affiche :
+
+* nombre de chaînes trouvées
+* nombre ignorées
+* nom du fichier de sortie
+
+Exemple :
+
+```text
+Scan terminé: 18 candidates, 42 ignorées
+Sortie: extract_strings_mxMainWindow_cpp.txt
+```
+
+---
+
+# 6. Révision humaine
+
+Le fichier brut est ensuite relu manuellement.
+
+Puis enrichi avec traduction anglaise et statut.
+
+Exemple :
+
+```text
+"Guardar Como..."|guardar como|wxPSeInt/mxMainWindow.cpp|262|Save As...|READY
+"Verificar Sintaxis"|verificar sintaxis|wxPSeInt/mxMainWindow.cpp|350|Check Syntax|READY
+"Ayuda rápida"|ayuda rapida|wxPSeInt/mxMainWindow.cpp|358|Quick Help|READY
+```
+
+---
+
+# 7. `extract-strings-merge`
+
+## Rôle
+
+Fusionner plusieurs fichiers enrichis validés.
+
+## Commande
+
+```bash
+chat_patch extract-strings-merge extract_strings_*.txt
+```
+
+ou
+
+```bash
+chat_patch extract-strings-merge ./extracts
+```
+
+## Sortie
+
+```text
+extract_strings_ALL_EN.txt
+```
+
+## Règles
+
+* dédupliquer par `source + file + line`
+* éventuellement signaler doublons de `normalized_key`
+* préserver ordre par fichier puis ligne
+* conserver les `SKIP`
+* stats de fusion
+
+Exemple de sortie console :
+
+```text
+Fusion terminée
+Fichiers lus: 12
+Lignes READY: 84
+Lignes SKIP: 9
+Doublons supprimés: 5
+Sortie: extract_strings_ALL_EN.txt
+```
+
+---
+
+# 8. `pseint-patcher`
+
+## Entrée
+
+Un fichier enrichi :
+
+```text
+source|normalized_key|file|line|english|status
+```
+
+## Traitement
+
+Pour chaque ligne `READY` :
+
+1. localiser l’occurrence dans le fichier
+2. générer la transformation C++ proposée
+3. vérifier l’état de `en.txt`
+4. afficher les previews
+5. demander confirmation
+6. appliquer ou non
+7. continuer
+8. statistiques finales
+
+---
+
+# 9. Preview pour chaque patch
+
+## 9.1 Preview code source
+
+Afficher :
+
+* fichier
+* ligne
+* avant
+* après
+
+Exemple :
+
+```text
+=== Patch code source ===
+Fichier : wxPSeInt/mxMainWindow.cpp
+Ligne   : 350
+
+AVANT :
+menuRun->Append(mxID_RUN_CHECK, "Verificar Sintaxis\tShift+F9");
+
+APRÈS :
+menuRun->Append(mxID_RUN_CHECK, tr("Verificar Sintaxis\tShift+F9"));
+```
+
+## 9.2 Preview `en.txt`
+
+Afficher :
+
+* clé source
+* clé normalisée
+* existence ou non
+* valeur actuelle éventuelle
+* valeur proposée
+
+Exemple :
+
+```text
+=== Patch langue en.txt ===
+Clé source       : Verificar Sintaxis\tShift+F9
+Clé normalisée   : verificar sintaxis shift f9
+Entrée existante : non
+Valeur proposée  : Check Syntax\tShift+F9
+```
+
+Si déjà présent :
+
+```text
+Entrée existante : oui
+Valeur actuelle  : Verify Syntax\tShift+F9
+Valeur proposée  : Check Syntax\tShift+F9
+```
+
+---
+
+# 10. Interaction utilisateur
+
+Pour chaque patch :
+
+```text
+Action ? [y]es / [n]o / [s]kip / [e]dit english / [q]uit
+```
+
+## Sens
+
+* `y` → applique code + update `en.txt`
+* `n` → rejette
+* `s` → ignore ce patch
+* `e` → permet d’éditer la traduction anglaise dans la console
+* `q` → arrête proprement
+
+Option future :
+
+* `a` = apply all remaining in same file
+
+---
+
+# 11. Gestion de `en.txt`
+
+Avant insertion :
+
+1. vérifier si la clé exacte existe
+2. vérifier si une variante normalisée existe
+3. afficher l’état
+4. proposer mise à jour ou ajout
+
+## Règles minimales
+
+* si clé exacte absente → ajout preview
+* si clé exacte présente avec même valeur → pas de modification
+* si clé exacte présente avec autre valeur → montrer conflit
+* si seule variante normalisée existe → signaler collision possible
+
+---
+
+# 12. Stats finales de `pseint-patcher`
+
+Exemple :
+
+```text
+=== Résumé patch ===
+Lignes READY lues        : 42
+Patches appliqués        : 31
+Rejets utilisateur       : 6
+Skips                    : 3
+Conflits en.txt          : 2
+Occurrences introuvables : 0
+Arrêt anticipé           : non
+```
+
+---
+
+# 13. Noms de fichiers recommandés
+
+## Extraction brute
+
+```text
+extract_strings_<nomcible>.txt
+```
+
+Exemples :
+
+```text
+extract_strings_mxMainWindow_cpp.txt
+extract_strings_Keywords_cpp.txt
+extract_strings_parser_cpp.txt
+```
+
+## Enrichis validés
+
+Tu peux garder le même nom, ou ajouter suffixe :
+
+```text
+extract_strings_mxMainWindow_cpp_EN.txt
+```
+
+## Batch global
+
+```text
+extract_strings_ALL_EN.txt
+```
+
+---
+
+# 14. Spécification CLI concise
+
+## `chat_patch extract-strings`
+
+### Syntaxe
+
+```bash
+chat_patch extract-strings <target>
+```
+
+### Paramètres futurs possibles
+
+```bash
+--out <file>
+--append
+--stats
+--likely-ui-only
+```
+
+---
+
+## `chat_patch extract-strings-merge`
+
+### Syntaxe
+
+```bash
+chat_patch extract-strings-merge <glob|dir|files...>
+```
+
+### Paramètres futurs possibles
+
+```bash
+--out extract_strings_ALL_EN.txt
+--only-ready
+```
+
+---
+
+## `chat_patch pseint-patcher`
+
+### Syntaxe
+
+```bash
+chat_patch pseint-patcher <batchfile>
+```
+
+### Paramètres futurs possibles
+
+```bash
+--dry-run
+--file <target>
+--only-ready
+--stats
+```
+
+---
+
+# 15. Exemple de workflow complet
+
+## 1. extraction
+
+```bash
+chat_patch extract-strings wxPSeInt/mxMainWindow.cpp
+chat_patch extract-strings wxPSeInt/mxSource.cpp
+chat_patch extract-strings pseint/Keywords.cpp
+```
+
+## 2. revue manuelle
+
+Tu corriges les `extract_strings_*.txt`
+
+## 3. enrichissement anglais
+
+Tu ajoutes traduction + statut
+
+## 4. fusion
+
+```bash
+chat_patch extract-strings-merge extract_strings_*_EN.txt
+```
+
+## 5. patch interactif
+
+```bash
+chat_patch pseint-patcher extract_strings_ALL_EN.txt
+```
+
+---
+
+# 16. Ma recommandation finale
+
+Pour la première version, fais minimal :
+
+## V1
+
+* `extract-strings <file>`
+* format `source|normalized_key|file|line`
+* `pseint-patcher <batchfile>`
+* statut seulement `READY` ou `SKIP`
+* insertion preview dans `en.txt`
+
+## V2
+
+* merge automatique
+* déduplication intelligente
+* mode dry-run
+* édition inline de la traduction
+* stats enrichies
+
+---
+
+# 17. En une phrase
+
+Tu es en train de concevoir un **pipeline semi-automatique de désenfouissement et de localisation du texte espagnol dans le code source**, avec validation humaine et patch interactif.
+
+C’est une très bonne architecture.
+
+Je peux maintenant te rédiger la **spécification technique V1 de `extract-strings` et `pseint-patcher` sous forme quasi-codable**, avec les entrées, sorties, heuristiques et pseudo-code.

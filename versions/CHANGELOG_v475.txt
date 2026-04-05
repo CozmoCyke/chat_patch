@@ -1,0 +1,15 @@
+# chat_patch v475 phase7
+
+## Features
+- extract-strings (V1)
+- pseint-patcher (V1 interactive)
+
+## Notes
+- heuristics conservative
+- no merge yet
+- no dry-run
+
+## Next (V2)
+- extract-strings-merge
+- collision analysis
+- dry-run
