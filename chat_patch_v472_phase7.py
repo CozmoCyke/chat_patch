@@ -6,7 +6,6 @@ import re
 import json
 import difflib
 import shutil
-import unicodedata
 from pathlib import Path
 from datetime import datetime
 
@@ -76,10 +75,6 @@ def escape_cpp_string(s: str) -> str:
     
 def escape_lang_string(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')    
-
-def strip_accents(s: str) -> str:
-    normalized = unicodedata.normalize("NFKD", s)
-    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
 
 def normalize_translate_key(s: str) -> str:
     s = s.lower()
@@ -185,276 +180,6 @@ def normalize_aggressive(s: str) -> str:
     return s
 
 
-def resolve_repo_path(target: str) -> Path:
-    path = Path(target)
-    if path.is_absolute():
-        return path
-    return (REPO_ROOT / path).resolve()
-
-
-def display_repo_path(path: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(REPO_ROOT.resolve()))
-    except Exception:
-        return str(path)
-
-
-def sanitize_extract_target_name(path: Path) -> str:
-    base = path.name
-    base = re.sub(r"[^A-Za-z0-9]+", "_", base)
-    base = re.sub(r"_+", "_", base).strip("_")
-    return base or "target"
-
-
-def normalize_localization_key(s: str) -> str:
-    s = s.replace("\\t", " ")
-    s = s.replace("\\n", " ")
-    s = s.replace("\\r", " ")
-    s = s.replace("\\f", " ")
-    s = s.replace("\\v", " ")
-    s = strip_accents(s)
-    s = s.lower()
-    s = re.sub(r"[^a-z0-9]+", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def make_extract_key(source_string: str) -> str:
-    return strip_accents(source_string)
-
-
-def unquote_if_needed(s: str) -> str:
-    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
-        return s[1:-1]
-    return s
-
-
-def normalize_lang_value_for_compare(value: str) -> str:
-    v = value.strip()
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in {"'", '"'}:
-        v = v[1:-1].strip()
-    return v
-
-
-def lang_values_equivalent(a: str, b: str) -> bool:
-    return normalize_lang_value_for_compare(a) == normalize_lang_value_for_compare(b)
-
-
-SPANISH_CUE_WORDS = {
-    "abrir",
-    "acerca",
-    "actualizar",
-    "actualizacion",
-    "agregar",
-    "ayuda",
-    "buscar",
-    "cerrar",
-    "configurar",
-    "copiar",
-    "debe",
-    "deshacer",
-    "editar",
-    "ejemplos",
-    "eliminar",
-    "encontrado",
-    "error",
-    "errores",
-    "escribir",
-    "existe",
-    "falta",
-    "guardar",
-    "instruccion",
-    "instrucciones",
-    "insertar",
-    "linea",
-    "mensaje",
-    "nuevo",
-    "opciones",
-    "operador",
-    "pseudocodigo",
-    "reemplazar",
-    "rehacer",
-    "salir",
-    "seleccione",
-    "seleccionar",
-    "sintaxis",
-    "traducir",
-    "traduccion",
-    "valida",
-    "valido",
-    "verificar",
-}
-
-
-def is_technical_string(raw: str) -> bool:
-    if not raw:
-        return True
-
-    if raw.startswith(("http://", "https://", "ftp://", "www.")):
-        return True
-
-    if re.search(r"^[A-Za-z]:[\\/]", raw):
-        return True
-
-    if re.search(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,6}(?:[\\/]|$)", raw):
-        return True
-
-    if re.search(r"(?:[A-Za-z0-9_.-]+[\\/]){2,}[A-Za-z0-9_.-]*", raw):
-        return True
-
-    if "::" in raw or "->" in raw:
-        return True
-
-    if re.fullmatch(r"[A-Za-z0-9_.-]+", raw):
-        return True
-
-    if re.search(r"\b(?:TODO|TBD|FIXME|XXX+|DEBUG)\b", raw, re.I):
-        return True
-
-    return False
-
-
-def is_already_localized_line(prefix: str) -> bool:
-    localizer_markers = (
-        "LocalizationManager::Instance().Translate(",
-        "Translate(",
-        "tr(",
-        "_(",
-        "wxGetTranslation(",
-    )
-    return any(marker in prefix for marker in localizer_markers)
-
-
-def is_likely_spanish_candidate(raw: str, prefix: str = "") -> bool:
-    raw = raw.strip()
-    if len(raw) < 2:
-        return False
-
-    if is_technical_string(raw):
-        return False
-
-    if is_already_localized_line(prefix):
-        return False
-
-    normalized = normalize_localization_key(raw)
-    if not normalized:
-        return False
-
-    tokens = normalized.split()
-    if not tokens:
-        return False
-
-    if any(token in SPANISH_CUE_WORDS for token in tokens):
-        return True
-
-    if re.search(r"[áéíóúñ¿¡ÁÉÍÓÚÑ]", raw):
-        return True
-
-    if raw.count(" ") >= 1 and len(tokens) >= 2 and len(normalized) >= 8:
-        if re.search(r"[.!?…]$", raw):
-            return True
-
-    if re.search(r"\b(?:Ctrl|Shift|Alt|F\d{1,2})\b", raw):
-        if any(token in SPANISH_CUE_WORDS for token in tokens):
-            return True
-
-    return False
-
-
-def iter_string_literals_with_lines(text: str):
-    i = 0
-    line = 1
-    line_start = 0
-    in_block_comment = False
-
-    while i < len(text):
-        ch = text[i]
-        nxt = text[i + 1] if i + 1 < len(text) else ""
-
-        if ch == "\n":
-            line += 1
-            i += 1
-            line_start = i
-            continue
-
-        if in_block_comment:
-            if ch == "*" and nxt == "/":
-                in_block_comment = False
-                i += 2
-                continue
-            i += 1
-            continue
-
-        if ch == "/" and nxt == "/":
-            while i < len(text) and text[i] != "\n":
-                i += 1
-            continue
-
-        if ch == "/" and nxt == "*":
-            in_block_comment = True
-            i += 2
-            continue
-
-        if ch != '"':
-            i += 1
-            continue
-
-        prefix = text[line_start:i]
-        start_line = line
-        start = i + 1
-        j = start
-        escaped = False
-        literal_line = line
-        found = False
-
-        while j < len(text):
-            cj = text[j]
-            if cj == "\n":
-                break
-            if escaped:
-                escaped = False
-                j += 1
-                continue
-            if cj == "\\":
-                escaped = True
-                j += 1
-                continue
-            if cj == '"':
-                found = True
-                break
-            j += 1
-
-        if not found:
-            i = j
-            continue
-
-        raw_inner = text[start:j]
-        yield {
-            "source": f'"{raw_inner}"',
-            "raw_inner": raw_inner,
-            "line": start_line,
-            "prefix": prefix,
-        }
-
-        i = j + 1
-
-
-def split_batch_line(line: str):
-    parts = line.split("|", 5)
-    if len(parts) != 6:
-        return None
-    source, normalized_key, file_name, line_no, english, status = parts
-    return {
-        "source": source,
-        "normalized_key": normalized_key,
-        "file": file_name.strip(),
-        "line": line_no.strip(),
-        "english": english,
-        "status": status.strip().upper(),
-    }
-
-
-
 def iter_cpp_files():
     for p in sorted(Path(".").glob("*.cpp")):
         if p.is_file():
@@ -474,7 +199,7 @@ def iter_search_files():
         ".chat_patch",
     }
 
-    for path in REPO_ROOT.rglob("*"):
+    for path in Path(".").rglob("*"):
         if not path.is_file():
             continue
 
@@ -485,415 +210,8 @@ def iter_search_files():
             yield path
 
 
-def extract_strings_from_text(text: str, rel_file: str):
-    candidates = []
-    seen = set()
-    total_literals = 0
-
-    for literal in iter_string_literals_with_lines(text):
-        total_literals += 1
-        source = literal["source"]
-        raw_inner = literal["raw_inner"]
-        line_no = literal["line"]
-        prefix = literal["prefix"]
-
-        if not is_likely_spanish_candidate(raw_inner, prefix=prefix):
-            continue
-
-        normalized = make_extract_key(raw_inner)
-        if not normalized:
-            continue
-
-        record = (source, normalized, rel_file, line_no)
-        if record in seen:
-            continue
-        seen.add(record)
-        candidates.append(
-            {
-                "source": source,
-                "normalized_key": normalized,
-                "file": rel_file,
-                "line": line_no,
-            }
-        )
-
-    ignored = total_literals - len(candidates)
-    return candidates, total_literals, ignored
-
-
-def cmd_extract_strings(target: str) -> int:
-    target_path = resolve_repo_path(target)
-    if not target_path.exists() or not target_path.is_file():
-        print(f"Fichier introuvable: {target}")
-        return 1
-
-    text, _enc = read_text_auto(target_path)
-    rel_file = display_repo_path(target_path)
-    candidates, total_literals, ignored = extract_strings_from_text(text, rel_file)
-
-    out_name = f"extract_strings_{sanitize_extract_target_name(target_path)}.txt"
-    out_path = Path.cwd() / out_name
-
-    lines = [
-        f"{item['source']}|{item['normalized_key']}|{item['file']}|{item['line']}"
-        for item in candidates
-    ]
-    out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-
-    print(f"Scan terminé: {len(candidates)} candidates, {ignored} ignorées")
-    print(f"Sortie: {out_name}")
-    return 0
-
-
-def locate_batch_code_line(lines: list[str], source_literal: str, expected_line: int):
-    def line_has_patchable_source(line: str) -> bool:
-        stripped = line.lstrip()
-        if stripped.startswith(("//", "/*", "*")):
-            return False
-        return source_literal in line
-
-    if expected_line < 1 or expected_line > len(lines):
-        expected_idx = None
-    else:
-        expected_idx = expected_line - 1
-
-    replacement_hits = []
-    if expected_idx is not None and line_has_patchable_source(lines[expected_idx]):
-        return expected_idx, "exact"
-
-    if expected_idx is not None:
-        start = max(0, expected_idx - 3)
-        end = min(len(lines), expected_idx + 4)
-        for idx in range(start, end):
-            if line_has_patchable_source(lines[idx]):
-                replacement_hits.append(idx)
-
-    if len(replacement_hits) == 1:
-        return replacement_hits[0], "nearby"
-
-    all_hits = [idx for idx, line in enumerate(lines) if line_has_patchable_source(line)]
-    if len(all_hits) == 1:
-        return all_hits[0], "unique"
-
-    if expected_idx is not None:
-        already = f'LocalizationManager::Instance().Translate("{escape_cpp_string(normalize_localization_key(unquote_if_needed(source_literal)))}")'
-        if already in lines[expected_idx]:
-            return expected_idx, "already"
-
-    return None, "missing" if not all_hits else "ambiguous"
-
-
-def build_code_patch_preview(line: str, source_literal: str, normalized_key: str):
-    replacement = (
-        f'LocalizationManager::Instance().Translate("{escape_cpp_string(normalized_key)}")'
-    )
-    if replacement in line:
-        return line, line, False, "already localized"
-
-    if source_literal not in line:
-        return line, line, False, "source not found"
-
-    new_line = line.replace(source_literal, replacement, 1)
-    if new_line == line:
-        return line, line, False, "no change"
-
-    return line, new_line, True, "patched"
-
-
-def is_wrapped_by_z(line: str, source_literal: str) -> bool:
-    pattern = r'_Z\s*\(\s*' + re.escape(source_literal) + r'\s*\)'
-    return re.search(pattern, line) is not None
-
-
-def build_z_code_patch_preview(line: str, source_literal: str, normalized_key: str):
-    if source_literal not in line:
-        return line, line, False, "source not found"
-
-    new_line = line.replace(
-        source_literal,
-        f'"{escape_cpp_string(normalized_key)}"',
-        1,
-    )
-    if new_line == line:
-        return line, line, False, "no change"
-
-    return line, new_line, True, "patched _Z"
-
-
-def preview_lang_upsert(path: Path, key: str, value: str):
-    text, enc, lines, entries = load_lang_entries(path)
-    norm = normalize_localization_key(key)
-
-    exact_entries = [e for e in entries if e["key"] == key]
-    norm_entries = [e for e in entries if e["norm_key"] == norm]
-    matching_entries = exact_entries + [
-        e for e in norm_entries if e not in exact_entries
-    ]
-
-    result = upsert_lang_entry(path, key, value)
-    changed = result["new_text"] != result["old_text"]
-
-    same_effective = any(
-        lang_values_equivalent(e["value"], value) for e in matching_entries
-    )
-
-    if same_effective and matching_entries:
-        state = "exact-same" if exact_entries else "normalized-same"
-        changed = False
-        result["new_text"] = result["old_text"]
-        result["new_line"] = result["old_line"]
-    elif exact_entries:
-        state = "exact-update"
-    elif norm_entries:
-        state = "normalized-collision"
-    else:
-        state = "insert"
-
-    return {
-        "encoding": enc,
-        "old_text": text,
-        "new_text": result["new_text"],
-        "changed": changed,
-        "state": state,
-        "exact_entries": exact_entries,
-        "norm_entries": norm_entries,
-        "matching_entries": matching_entries,
-        "same_effective": same_effective,
-        "line": result["line"],
-        "old_line": result["old_line"],
-        "new_line": result["new_line"],
-        "key": key,
-        "value": value,
-        "normalized_key": norm,
-    }
-
-
-def backup_path_for_target(target: Path) -> Path:
-    rel = display_repo_path(target)
-    rel_path = Path(rel)
-    if rel_path.is_absolute():
-        rel_path = Path(target.name)
-    return BACKUP_DIR / rel_path
-
-
-def apply_text_file_preview(target: Path, preview_text: str, encoding: str) -> None:
-    if target.exists():
-        backup_target = backup_path_for_target(target)
-        old_text, old_enc = read_text_auto(target)
-        write_text_auto(backup_target, old_text, old_enc)
-    write_text_auto(target, preview_text, encoding)
-
-
-def cmd_pseint_patcher(batchfile: str) -> int:
-    batch_path = resolve_repo_path(batchfile)
-    if not batch_path.exists() or not batch_path.is_file():
-        print(f"Fichier batch introuvable: {batchfile}")
-        return 1
-
-    text, _enc = read_text_auto(batch_path)
-    rows = []
-    for lineno, raw_line in enumerate(text.splitlines(), 1):
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        parsed = split_batch_line(raw_line)
-        if parsed is None:
-            print(f"Ligne batch ignorée (format invalide) {lineno}: {raw_line}")
-            continue
-        parsed["batch_line"] = lineno
-        rows.append(parsed)
-
-    ready_rows = [row for row in rows if row["status"] == "READY"]
-
-    stats = {
-        "ready_read": len(ready_rows),
-        "applied": 0,
-        "rejected": 0,
-        "skipped": 0,
-        "en_conflicts": 0,
-        "missing": 0,
-        "quit": False,
-    }
-
-    if not ready_rows:
-        print("Aucune ligne READY à traiter.")
-        print("=== Résumé patch ===")
-        print("Lignes READY lues        : 0")
-        print("Patches appliqués        : 0")
-        print("Rejets utilisateur       : 0")
-        print("Skips                    : 0")
-        print("Conflits en.txt          : 0")
-        print("Occurrences introuvables : 0")
-        print("Arrêt anticipé           : non")
-        return 0
-
-    for row in ready_rows:
-        source_field = row["source"]
-        source_literal = source_field if source_field.startswith('"') else f'"{source_field}"'
-        source_inner = unquote_if_needed(source_field)
-        normalized_key = row["normalized_key"] or normalize_localization_key(source_inner)
-        file_path = resolve_repo_path(row["file"])
-        line_no = int(row["line"]) if row["line"].isdigit() else -1
-        english = row["english"]
-
-        if not file_path.exists() or not file_path.is_file():
-            print(f"\n=== {row['file']} ===")
-            print(f"Ligne batch : {row['batch_line']}")
-            print("Fichier cible introuvable, ligne ignorée.")
-            stats["missing"] += 1
-            continue
-
-        code_text, code_enc = read_text_auto(file_path)
-        code_lines = code_text.splitlines()
-        idx, status = locate_batch_code_line(code_lines, source_literal, line_no)
-
-        if idx is None:
-            print(f"\n=== {display_repo_path(file_path)} ===")
-            print(f"Ligne batch : {row['batch_line']}")
-            print(f"Source      : {source_literal}")
-            print(f"État code    : {status}")
-            print("Occurrence introuvable, ligne ignorée.")
-            stats["missing"] += 1
-            continue
-
-        old_line = code_lines[idx]
-
-        lang_target = LANG_FILES.get("en")
-        if lang_target is None or not lang_target.exists():
-            print("Fichier lang/en.txt introuvable.")
-            return 1
-
-        lang_preview = preview_lang_upsert(lang_target, normalized_key, english)
-
-        source_is_z = is_wrapped_by_z(old_line, source_literal)
-        if source_is_z:
-            if lang_preview["changed"]:
-                new_line, after_line, code_changed, code_note = build_z_code_patch_preview(
-                    old_line, source_literal, normalized_key
-                )
-            else:
-                new_line, after_line, code_changed, code_note = old_line, old_line, False, "already localized (_Z)"
-        else:
-            new_line, after_line, code_changed, code_note = build_code_patch_preview(
-                old_line, source_literal, normalized_key
-            )
-
-        if lang_preview["state"] == "normalized-collision":
-            stats["en_conflicts"] += 1
-
-        print(f"\n=== Patch code source ===")
-        print(f"Fichier : {display_repo_path(file_path)}")
-        print(f"Ligne   : {idx + 1}")
-        print()
-        print("AVANT :")
-        print(old_line)
-        print()
-        print("APRÈS :")
-        print(after_line)
-        print(f"État   : {code_note}")
-        print()
-
-        print("=== Patch langue en.txt ===")
-        print(f"Clé source      : {source_inner}")
-        print(f"Clé normalisée  : {normalized_key}")
-        print(f"Entrée existante: {'oui' if lang_preview['matching_entries'] else 'non'}")
-        if lang_preview["matching_entries"]:
-            current_values = ", ".join(
-                repr(entry["value"]) for entry in lang_preview["matching_entries"]
-            )
-            print(f"Valeur actuelle : {current_values}")
-        if lang_preview["norm_entries"] and not lang_preview["exact_entries"]:
-            current_norms = ", ".join(
-                f"{entry['key']}={entry['value']}" for entry in lang_preview["norm_entries"]
-            )
-            print(f"Collision norm. : {current_norms}")
-        print(f"Valeur proposée : {english}")
-        if not lang_preview["changed"]:
-            print("État           : aucun changement nécessaire")
-        elif lang_preview["state"] == "normalized-collision":
-            print("État           : collision normalisée possible")
-        elif lang_preview["state"] == "normalized-same":
-            print("État           : entrée normalisée déjà équivalente")
-        elif lang_preview["state"] == "exact-update":
-            print("État           : mise à jour d'une entrée existante")
-        else:
-            print("État           : ajout d'une entrée")
-        print()
-
-        if not code_changed and not lang_preview["changed"]:
-            print("Aucun changement à appliquer, ligne ignorée.")
-            stats["skipped"] += 1
-            continue
-
-        while True:
-            try:
-                action = input("Action ? [y]es / [n]o / [s]kip / [e]dit english / [q]uit ").strip().lower()
-            except EOFError:
-                action = "q"
-
-            if action == "e":
-                try:
-                    edited = input(f"Nouvelle traduction anglaise [{english}]: ").strip()
-                except EOFError:
-                    edited = ""
-                if edited:
-                    english = edited
-                    lang_preview = preview_lang_upsert(lang_target, normalized_key, english)
-                    if lang_preview["state"] == "normalized-collision":
-                        stats["en_conflicts"] += 1
-                    print()
-                    print("Traduction anglaise mise à jour.")
-                    print(f"Valeur proposée : {english}")
-                    print()
-                continue
-
-            if action in {"s", "skip"}:
-                stats["skipped"] += 1
-                break
-
-            if action in {"n", "no"}:
-                stats["rejected"] += 1
-                break
-
-            if action in {"q", "quit"}:
-                stats["quit"] = True
-                break
-
-            if action in {"y", "yes", "o", "oui"}:
-                if code_changed:
-                    code_lines[idx] = after_line
-                    new_code_text = "\n".join(code_lines)
-                    if code_text.endswith("\n"):
-                        new_code_text += "\n"
-                    apply_text_file_preview(file_path, new_code_text, code_enc)
-
-                if lang_preview["changed"]:
-                    apply_text_file_preview(lang_target, lang_preview["new_text"], lang_preview["encoding"])
-
-                stats["applied"] += 1
-                break
-
-            print("Réponse attendue: y, n, s, e ou q.")
-
-        if stats["quit"]:
-            break
-
-    print()
-    print("=== Résumé patch ===")
-    print(f"Lignes READY lues        : {stats['ready_read']}")
-    print(f"Patches appliqués        : {stats['applied']}")
-    print(f"Rejets utilisateur       : {stats['rejected']}")
-    print(f"Skips                    : {stats['skipped']}")
-    print(f"Conflits en.txt          : {stats['en_conflicts']}")
-    print(f"Occurrences introuvables : {stats['missing']}")
-    print(f"Arrêt anticipé           : {'oui' if stats['quit'] else 'non'}")
-    return 0
-
-
 def usage() -> None:
     print("Usage:")
-    print('  chat_patch extract-strings <target>')
-    print('  chat_patch pseint-patcher <batchfile>')
     print('  chat_patch pseint-find "chaine"')
     print('  chat_patch pseint-replace "chaine"')
     print('  chat_patch pseint-upsert "chaine"')
@@ -962,13 +280,13 @@ def strip_edge_spaces_with_flags(s: str):
     return core, has_before, has_after    
 
 #def patch_line(line: str, target_raw: str, target_norm: str):
-def patch_line(
+ def patch_line(
     line: str,
     target_raw: str,
     target_norm: str,
     spacebefore: bool = False,
     spaceafter: bool = False,
-    ):   
+):   
     def same(s: str) -> bool:
         return s == target_raw or normalize_aggressive(s) == target_norm
 
@@ -1743,15 +1061,21 @@ def cmd_pseint_upsert(
     spacebefore: bool = False,
     spaceafter: bool = False,
 ) -> int:
+    
     ensure_dirs()
     clear_preview_dir()
-
-    norm = normalize_aggressive(source_text)
+    
+    # 1) si la chaîne existe déjà dans Translate("..."), on met à jour le fichier langue
+    #if cmd_lang_upsert_if_key_exists(lang, source_text, translated_text):
+    #    return 0
+    
+    # 2) sinon on continue le comportement existant: patch du code C++
+    norm = normalize_aggressive(query)
     patches = []
     already_localized_hits = []
 
     exact_translate_needle = (
-        f'LocalizationManager::Instance().Translate("{escape_cpp_string(source_text)}")'
+        f'LocalizationManager::Instance().Translate("{escape_cpp_string(query)}")'
     )
 
     for file in iter_search_files():
@@ -1762,18 +1086,19 @@ def cmd_pseint_upsert(
         local_already = []
 
         for i, line in enumerate(lines):
-            # 1) Détection informative : déjà localisé tel quel
+            # 1) Détection informative: déjà localisé tel quel
             if exact_translate_needle in line:
                 local_already.append(
                     {
                         "line": i + 1,
                         "category": "Déjà localisé",
                         "old": line,
-                        "key": source_text,
+                        "key": query,
                     }
                 )
 
             # 2) Tentative normale de patch
+            patched = patch_line(line, query, norm)
             patched = patch_line(
                 line,
                 source_text,
@@ -1827,9 +1152,7 @@ def cmd_pseint_upsert(
     if not patches and already_localized_hits:
         total_already = sum(len(p["hits"]) for p in already_localized_hits)
 
-        print(f"Langue          : {lang}")
-        print(f"Chaîne source   : {source_text!r}")
-        print(f"Traduction      : {translated_text!r}")
+        print(f"Chaîne demandée : {query!r}")
         print(f"Clé normalisée  : {norm!r}")
         print("Statut          : déjà localisée dans le code")
         print(f"Occurrences     : {total_already}")
@@ -1854,9 +1177,7 @@ def cmd_pseint_upsert(
 
     total_occ = sum(len(p["hits"]) for p in patches)
 
-    print(f"Langue          : {lang}")
-    print(f"Chaîne source   : {source_text!r}")
-    print(f"Traduction      : {translated_text!r}")
+    print(f"Chaîne demandée : {query!r}")
     print(f"Clé normalisée  : {norm!r}")
     print(f"Fichiers touchés: {len(patches)}")
     print(f"Occurrences     : {total_occ}")
@@ -1887,12 +1208,8 @@ def cmd_pseint_upsert(
     session = {
         "created_at": datetime.now().isoformat(),
         "mode": "upsert_pseint",
-        "lang": lang,
-        "source_text": source_text,
-        "translated_text": translated_text,
+        "query": query,
         "normalized_key": norm,
-        "spacebefore": spacebefore,
-        "spaceafter": spaceafter,
         "pending_apply": True,
         "files": [
             {
@@ -1908,7 +1225,7 @@ def cmd_pseint_upsert(
 
     print(f"[PREVIEW PRÊTE] {PREVIEW_DIR}")
     print("Utilise maintenant : chat_patch apply")
-    return 0    
+    return 0
 
 def cmd_lang_find(query: str) -> int:
     hits = find_lang_hits(query)
@@ -2420,20 +1737,6 @@ def main() -> int:
 
     cmd = sys.argv[1]
 
-    if cmd == "extract-strings":
-        if len(sys.argv) < 3:
-            usage()
-            return 1
-        target = " ".join(sys.argv[2:])
-        return cmd_extract_strings(target)
-
-    if cmd == "pseint-patcher":
-        if len(sys.argv) < 3:
-            usage()
-            return 1
-        batchfile = " ".join(sys.argv[2:])
-        return cmd_pseint_patcher(batchfile)
-
     if cmd == "pseint-find":
         if len(sys.argv) < 3:
             usage()
@@ -2448,45 +1751,45 @@ def main() -> int:
         query = " ".join(sys.argv[2:])
         return cmd_pseint_upsert(query)
 
-    if cmd == "pseint-upsert":
-        if len(sys.argv) < 5:
-            usage()
-            return 1
+    	if cmd == "pseint-upsert":
+		if len(sys.argv) < 5:
+			usage()
+			return 1
 
-        args = sys.argv[2:]
+		args = sys.argv[2:]
 
-        spacebefore = False
-        spaceafter = False
+		spacebefore = False
+		spaceafter = False
 
-        if args[0] == "spacebefore":
-            spacebefore = True
-            args = args[1:]
+		if args[0] == "spacebefore":
+			spacebefore = True
+			args = args[1:]
 
-        if len(args) < 3:
-            usage()
-            return 1
+		if len(args) < 3:
+			usage()
+			return 1
 
-        lang = args[0]
-        args = args[1:]
+		lang = args[0]
+		args = args[1:]
 
-        if args[0] == "spaceafter":
-            spaceafter = True
-            args = args[1:]
+		if args[0] == "spaceafter":
+			spaceafter = True
+			args = args[1:]
 
-        if len(args) < 2:
-            usage()
-            return 1
+		if len(args) < 2:
+			usage()
+			return 1
 
-        source_text = args[0]
-        translated_text = " ".join(args[1:])
+		source_text = args[0]
+		translated_text = " ".join(args[1:])
 
-        return cmd_pseint_upsert(
-            lang,
-            source_text,
-            translated_text,
-            spacebefore=spacebefore,
-            spaceafter=spaceafter,
-        )
+		return cmd_pseint_upsert(
+			lang,
+			source_text,
+			translated_text,
+			spacebefore=spacebefore,
+			spaceafter=spaceafter,
+		)
 
     if cmd == "lang-find":
         if len(sys.argv) < 3:
