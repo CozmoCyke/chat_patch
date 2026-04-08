@@ -798,27 +798,6 @@ def build_z_code_patch_preview(line: str, source_literal: str, normalized_key: s
     return line, new_line, True, "patched _Z"
 
 
-def is_set_config_key_literal(
-    code_lines: list[str], line_idx: int, source_literal: str, radius: int = 2
-) -> bool:
-    start = max(0, line_idx - radius)
-    end = min(len(code_lines), line_idx + radius + 1)
-    window = "\n".join(code_lines[start:end])
-
-    for match in re.finditer(r"\bSetConfigStr\s*\(", window):
-        call_start = match.end()
-        source_pos = window.find(source_literal, call_start)
-        if source_pos < 0:
-            continue
-
-        # If there is no comma before the literal, we are looking at the first
-        # argument of SetConfigStr(...). In that case the key must stay unchanged.
-        if "," not in window[call_start:source_pos]:
-            return True
-
-    return False
-
-
 def skip_ws_and_comments(lines: list[str], line_idx: int, col_idx: int):
     i = line_idx
     j = col_idx
@@ -1535,17 +1514,9 @@ def cmd_pseint_patcher(batchfile: str) -> int:
                 )
                 stats["already_localized"] += 1
         else:
-            if is_set_config_key_literal(code_lines, idx, source_literal):
-                new_line, after_line, code_changed, code_note = (
-                    old_line,
-                    old_line,
-                    False,
-                    "config key preserved",
-                )
-            else:
-                new_line, after_line, code_changed, code_note = build_code_patch_preview(
-                    old_line, source_literal, normalized_key
-                )
+            new_line, after_line, code_changed, code_note = build_code_patch_preview(
+                old_line, source_literal, normalized_key
+            )
 
         if lang_preview["state"] == "normalized-collision":
             stats["en_conflicts"] += 1

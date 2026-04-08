@@ -200,10 +200,10 @@ def display_repo_path(path: Path) -> str:
 
 
 def sanitize_extract_target_name(path: Path) -> str:
-    rel = display_repo_path(path).replace("\\", "/")
-    rel = re.sub(r"[^A-Za-z0-9]+", "_", rel)
-    rel = re.sub(r"_+", "_", rel).strip("_")
-    return rel or "target"
+    base = path.name
+    base = re.sub(r"[^A-Za-z0-9]+", "_", base)
+    base = re.sub(r"_+", "_", base).strip("_")
+    return base or "target"
 
 
 def normalize_localization_key(s: str) -> str:
@@ -221,80 +221,6 @@ def normalize_localization_key(s: str) -> str:
 
 def make_extract_key(source_string: str) -> str:
     return strip_accents(source_string)
-
-
-def is_hard_technical_string(raw: str) -> bool:
-    if not raw:
-        return True
-
-    if raw.startswith(("http://", "https://", "ftp://", "www.")):
-        return True
-
-    if re.search(r"^[A-Za-z]:[\\/]", raw):
-        return True
-
-    if re.search(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,6}(?:[\\/]|$)", raw):
-        return True
-
-    if re.search(r"(?:[A-Za-z0-9_.-]+[\\/]){2,}[A-Za-z0-9_.-]*", raw):
-        return True
-
-    if "::" in raw or "->" in raw:
-        return True
-
-    if re.search(r"\b(?:TODO|TBD|FIXME|XXX+|DEBUG)\b", raw, re.I):
-        return True
-
-    if re.fullmatch(r"ver\d{6,}", raw, re.I):
-        return True
-
-    return False
-
-
-def is_text_like_default_value(raw: str) -> bool:
-    raw = raw.strip()
-    if not raw or is_hard_technical_string(raw):
-        return False
-
-    if re.search(r"\s", raw):
-        return True
-
-    if re.search(r"[áéíóúñ¿¡ÁÉÍÓÚÑ]", raw):
-        return True
-
-    if re.search(r"[.!?…]", raw):
-        return True
-
-    return len(raw) >= 12
-
-
-def is_whitespace_only_literal(raw: str) -> bool:
-    return re.fullmatch(r"(?:\s|\\[nrtfv])+?", raw) is not None
-
-
-def classify_literal_context(prefix: str) -> str | None:
-    stripped = prefix.rstrip()
-
-    if re.search(r"\bSetConfigStr\s*\(\s*$", stripped):
-        return "set_key"
-
-    if re.search(r"\bSetConfigStr\s*\([^,\n]*,\s*$", stripped):
-        return "set_value"
-
-    if re.search(r"\bGetConfigStr\s*\(\s*$", stripped):
-        return "lookup_key"
-
-    if re.search(
-        r"\bwx(?:MessageBox|MessageDialog|LogMessage|LogWarning|LogError|LogStatus)\s*\(\s*$",
-        stripped,
-    ):
-        return "ui_message"
-
-    return None
-
-
-def is_lookup_config_candidate(prefix: str) -> bool:
-    return classify_literal_context(prefix) == "lookup_key"
 
 
 def unquote_if_needed(s: str) -> str:
@@ -361,10 +287,28 @@ SPANISH_CUE_WORDS = {
 
 
 def is_technical_string(raw: str) -> bool:
-    if is_hard_technical_string(raw):
+    if not raw:
+        return True
+
+    if raw.startswith(("http://", "https://", "ftp://", "www.")):
+        return True
+
+    if re.search(r"^[A-Za-z]:[\\/]", raw):
+        return True
+
+    if re.search(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,6}(?:[\\/]|$)", raw):
+        return True
+
+    if re.search(r"(?:[A-Za-z0-9_.-]+[\\/]){2,}[A-Za-z0-9_.-]*", raw):
+        return True
+
+    if "::" in raw or "->" in raw:
         return True
 
     if re.fullmatch(r"[A-Za-z0-9_.-]+", raw):
+        return True
+
+    if re.search(r"\b(?:TODO|TBD|FIXME|XXX+|DEBUG)\b", raw, re.I):
         return True
 
     return False
@@ -545,13 +489,24 @@ def extract_strings_from_text(text: str, rel_file: str):
     candidates = []
     seen = set()
     total_literals = 0
-    lines = text.splitlines()
-    visited_blocks = set()
 
-    def add_candidate(source: str, normalized: str, line_no: int):
+    for literal in iter_string_literals_with_lines(text):
+        total_literals += 1
+        source = literal["source"]
+        raw_inner = literal["raw_inner"]
+        line_no = literal["line"]
+        prefix = literal["prefix"]
+
+        if not is_likely_spanish_candidate(raw_inner, prefix=prefix):
+            continue
+
+        normalized = make_extract_key(raw_inner)
+        if not normalized:
+            continue
+
         record = (source, normalized, rel_file, line_no)
         if record in seen:
-            return
+            continue
         seen.add(record)
         candidates.append(
             {
@@ -561,139 +516,6 @@ def extract_strings_from_text(text: str, rel_file: str):
                 "line": line_no,
             }
         )
-
-    # Some adjacent literal blocks are easier to detect from the raw lines than
-    # from the literal scanner alone, so we pre-walk the file for multiline spans.
-    for line_idx, line in enumerate(lines):
-        if '"' not in line:
-            continue
-        for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', line):
-            source = f'"{m.group(1)}"'
-            block_info = classify_string_block(lines, line_idx, source)
-            if not block_info["found"] or not block_info["multiline"]:
-                continue
-            if block_info["wrapper"] == "_ZZ":
-                continue
-
-            block_key = (
-                block_info["block_start"],
-                block_info["block_end"],
-                block_info["wrapper"],
-            )
-            if block_key in visited_blocks:
-                continue
-            visited_blocks.add(block_key)
-
-            block_fragments = extract_block_fragments(
-                lines, block_info["block_start"], block_info["block_end"]
-            )
-            for fragment in block_fragments:
-                if is_whitespace_only_literal(fragment["raw_inner"]):
-                    continue
-                normalized = fragment["normalized_key"]
-                if normalized:
-                    add_candidate(fragment["source"], normalized, fragment["line_number"])
-
-    for literal in iter_string_literals_with_lines(text):
-        total_literals += 1
-        source = literal["source"]
-        raw_inner = literal["raw_inner"]
-        line_no = literal["line"]
-        prefix = literal["prefix"]
-
-        if is_whitespace_only_literal(raw_inner):
-            continue
-
-        block_info = None
-        line_idx = line_no - 1
-        if 0 <= line_idx < len(lines):
-            block_info = classify_string_block(lines, line_idx, source)
-
-        if block_info and block_info["found"]:
-            if block_info["wrapper"] == "_ZZ":
-                continue
-
-            if block_info["multiline"]:
-                block_key = (
-                    block_info["block_start"],
-                    block_info["block_end"],
-                    block_info["wrapper"],
-                )
-                if block_key in visited_blocks:
-                    continue
-                visited_blocks.add(block_key)
-
-                block_fragments = extract_block_fragments(
-                    lines, block_info["block_start"], block_info["block_end"]
-                )
-
-                if block_info["wrapper"] == "_Z":
-                    for fragment in block_fragments:
-                        if is_whitespace_only_literal(fragment["raw_inner"]):
-                            continue
-                        normalized = fragment["normalized_key"]
-                        if normalized:
-                            add_candidate(
-                                fragment["source"], normalized, fragment["line_number"]
-                            )
-                    continue
-
-                for fragment in block_fragments:
-                    if is_whitespace_only_literal(fragment["raw_inner"]):
-                        continue
-                    normalized = fragment["normalized_key"]
-                    if normalized:
-                        add_candidate(fragment["source"], normalized, fragment["line_number"])
-                continue
-
-        context = classify_literal_context(prefix)
-
-        if context == "set_key":
-            if is_hard_technical_string(raw_inner):
-                continue
-            normalized = make_extract_key(raw_inner)
-            if not normalized:
-                continue
-            add_candidate(source, normalized, line_no)
-            continue
-
-        if context == "lookup_key":
-            if is_hard_technical_string(raw_inner):
-                continue
-            normalized = make_extract_key(raw_inner)
-            if not normalized:
-                continue
-            add_candidate(source, normalized, line_no)
-            continue
-
-        if context == "set_value":
-            if not is_text_like_default_value(raw_inner):
-                continue
-            normalized = make_extract_key(raw_inner)
-            if not normalized:
-                continue
-            add_candidate(source, normalized, line_no)
-            continue
-
-        if context == "ui_message":
-            if is_hard_technical_string(raw_inner):
-                continue
-            normalized = make_extract_key(raw_inner)
-            if not normalized:
-                continue
-            add_candidate(source, normalized, line_no)
-            continue
-
-        if not is_lookup_config_candidate(prefix) and not is_likely_spanish_candidate(
-            raw_inner, prefix=prefix
-        ):
-            continue
-
-        normalized = make_extract_key(raw_inner)
-        if not normalized:
-            continue
-
-        add_candidate(source, normalized, line_no)
 
     ignored = total_literals - len(candidates)
     return candidates, total_literals, ignored
@@ -798,217 +620,6 @@ def build_z_code_patch_preview(line: str, source_literal: str, normalized_key: s
     return line, new_line, True, "patched _Z"
 
 
-def is_set_config_key_literal(
-    code_lines: list[str], line_idx: int, source_literal: str, radius: int = 2
-) -> bool:
-    start = max(0, line_idx - radius)
-    end = min(len(code_lines), line_idx + radius + 1)
-    window = "\n".join(code_lines[start:end])
-
-    for match in re.finditer(r"\bSetConfigStr\s*\(", window):
-        call_start = match.end()
-        source_pos = window.find(source_literal, call_start)
-        if source_pos < 0:
-            continue
-
-        # If there is no comma before the literal, we are looking at the first
-        # argument of SetConfigStr(...). In that case the key must stay unchanged.
-        if "," not in window[call_start:source_pos]:
-            return True
-
-    return False
-
-
-def skip_ws_and_comments(lines: list[str], line_idx: int, col_idx: int):
-    i = line_idx
-    j = col_idx
-    in_block_comment = False
-
-    while i < len(lines):
-        line = lines[i]
-
-        while j < len(line):
-            if in_block_comment:
-                end = line.find("*/", j)
-                if end == -1:
-                    break
-                j = end + 2
-                in_block_comment = False
-                continue
-
-            if line.startswith("//", j):
-                break
-
-            if line.startswith("/*", j):
-                in_block_comment = True
-                j += 2
-                continue
-
-            if line[j] in " \t\r":
-                j += 1
-                continue
-
-            return i, j
-
-        i += 1
-        j = 0
-
-    return None, None
-
-
-def classify_string_block(lines: list[str], line_idx: int, source_literal: str):
-    def line_has_string_literal(idx: int) -> bool:
-        if idx < 0 or idx >= len(lines):
-            return False
-        line = lines[idx]
-        return '"' in line and not line.lstrip().startswith("//")
-
-    def line_continues_string_block(idx: int) -> bool:
-        if idx < 0 or idx >= len(lines):
-            return False
-        line = lines[idx].rstrip()
-        if not line or line.lstrip().startswith("//"):
-            return False
-        return bool(
-            re.search(
-                r'"(?:[^"\\]|\\.)*"\s*(?://.*)?$',
-                line,
-            )
-        )
-
-    def line_starts_string_literal(idx: int) -> bool:
-        if idx < 0 or idx >= len(lines):
-            return False
-        return bool(re.match(r'^\s*"', lines[idx]))
-
-    line = lines[line_idx]
-    start = line.find(source_literal)
-    if start < 0:
-        return {
-            "found": False,
-            "wrapper": None,
-            "multiline": False,
-            "concat": False,
-            "supported": False,
-            "reason": "source not found",
-            "block_start": line_idx,
-            "block_end": line_idx,
-        }
-
-    block_start = line_idx
-    while (
-        block_start > 0
-        and line_continues_string_block(block_start - 1)
-        and line_starts_string_literal(block_start)
-    ):
-        block_start -= 1
-
-    block_end = line_idx
-    while (
-        block_end + 1 < len(lines)
-        and line_continues_string_block(block_end)
-        and line_starts_string_literal(block_end + 1)
-    ):
-        block_end += 1
-
-    multiline = block_start != block_end
-    concat = multiline
-    wrapper = None
-    for idx in range(block_start, block_end + 1):
-        quote_idx = lines[idx].find('"')
-        prefix = lines[idx][:quote_idx].rstrip() if quote_idx >= 0 else lines[idx].rstrip()
-        if re.search(r'_ZZ\s*\($', prefix):
-            wrapper = "_ZZ"
-            break
-        if wrapper is None and re.search(r'_Z\s*\($', prefix):
-            wrapper = "_Z"
-
-    supported = True
-    reason = "single literal"
-
-    if wrapper == "_ZZ":
-        supported = False
-        reason = "_ZZ variant is byte-string conversion, not translate-aware"
-    elif multiline:
-        supported = False
-        if wrapper == "_Z":
-            reason = "_Z multiline/concatenated block"
-        else:
-            reason = "multiline literal block"
-
-    return {
-        "found": True,
-        "wrapper": wrapper,
-        "multiline": multiline,
-        "concat": concat,
-        "supported": supported,
-        "reason": reason,
-        "block_start": block_start,
-        "block_end": block_end,
-    }
-
-
-def extract_block_fragments(lines: list[str], block_start: int, block_end: int):
-    fragments = []
-    for idx in range(block_start, block_end + 1):
-        line = lines[idx]
-        for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', line):
-            raw_inner = m.group(1)
-            source = f'"{raw_inner}"'
-            prefix = line[: m.start()].rstrip()
-            fragments.append(
-                {
-                    "source": source,
-                    "raw_inner": raw_inner,
-                    "prefix": prefix,
-                    "line_index": idx,
-                    "line_number": idx + 1,
-                    "start_col": m.start(),
-                    "end_col": m.end(),
-                    "normalized_key": make_extract_key(raw_inner),
-                }
-            )
-    return fragments
-
-
-def build_multiline_literal_block_preview(
-    lines: list[str], block_info: dict, fragments: list[dict]
-):
-    if not fragments:
-        return lines[block_info["block_start"]], lines[block_info["block_start"]], False, "block not parsed"
-
-    replacement_parts = [
-        f'LocalizationManager::Instance().Translate("{escape_cpp_string(fragment["normalized_key"])}")'
-        for fragment in fragments
-        if fragment["normalized_key"]
-    ]
-    replacement = " + ".join(replacement_parts)
-
-    first = fragments[0]
-    last = fragments[-1]
-    first_line = lines[first["line_index"]]
-    last_line = lines[last["line_index"]]
-    prefix = first_line[: first["start_col"]]
-    suffix = last_line[last["end_col"] :]
-    new_block_line = prefix + replacement + suffix
-    old_block_text = "\n".join(lines[block_info["block_start"] : block_info["block_end"] + 1])
-
-    if replacement and replacement in old_block_text:
-        return old_block_text, old_block_text, False, "already localized"
-
-    return old_block_text, new_block_line, True, "patched multiline literal block"
-
-
-def find_block_fragment(fragments: list[dict], source_literal: str, line_index: int):
-    for fragment in fragments:
-        if fragment["line_index"] == line_index and fragment["source"] == source_literal:
-            return fragment
-    for fragment in fragments:
-        if fragment["source"] == source_literal:
-            return fragment
-    return None
-
-
 def preview_lang_upsert(path: Path, key: str, value: str):
     text, enc, lines, entries = load_lang_entries(path)
     norm = normalize_localization_key(key)
@@ -1087,12 +698,7 @@ def cmd_pseint_patcher(batchfile: str) -> int:
             continue
         parsed = split_batch_line(raw_line)
         if parsed is None:
-            print(
-                "Ligne batch ignorée (format invalide, attendu "
-                "source|key|file|line|english|READY; les lignes d'extraction brutes "
-                "ne suffisent pas) "
-                f"{lineno}: {raw_line}"
-            )
+            print(f"Ligne batch ignorée (format invalide) {lineno}: {raw_line}")
             continue
         parsed["batch_line"] = lineno
         rows.append(parsed)
@@ -1104,39 +710,24 @@ def cmd_pseint_patcher(batchfile: str) -> int:
         "applied": 0,
         "rejected": 0,
         "skipped": 0,
-        "skipped_multiline_Z": 0,
-        "skipped_ZZ": 0,
-        "skipped_multiline_literal": 0,
-        "multiline_Z_lang_only": 0,
-        "already_localized": 0,
         "en_conflicts": 0,
         "missing": 0,
         "quit": False,
     }
-    processed_multiline_literal_blocks = set()
-    processed_multiline_literal_rows = set()
 
     if not ready_rows:
         print("Aucune ligne READY à traiter.")
         print("=== Résumé patch ===")
         print("Lignes READY lues        : 0")
         print("Patches appliqués        : 0")
-        print("Skips total              : 0")
-        print("  - multiline _Z         : 0")
-        print("  - _ZZ                  : 0")
-        print("  - multiline literal    : 0")
-        print("multiline_Z_lang_only    : 0")
-        print("Already localized        : 0")
         print("Rejets utilisateur       : 0")
+        print("Skips                    : 0")
         print("Conflits en.txt          : 0")
         print("Occurrences introuvables : 0")
         print("Arrêt anticipé           : non")
         return 0
 
     for row in ready_rows:
-        if row["batch_line"] in processed_multiline_literal_rows:
-            continue
-
         source_field = row["source"]
         source_literal = source_field if source_field.startswith('"') else f'"{source_field}"'
         source_inner = unquote_if_needed(source_field)
@@ -1166,386 +757,26 @@ def cmd_pseint_patcher(batchfile: str) -> int:
             continue
 
         old_line = code_lines[idx]
-        block_info = classify_string_block(code_lines, idx, source_literal)
 
         lang_target = LANG_FILES.get("en")
         if lang_target is None or not lang_target.exists():
             print("Fichier lang/en.txt introuvable.")
             return 1
 
-        # Multiline _Z stays code-frozen here; we still audit the fragment key in en.txt.
-        if block_info["wrapper"] == "_Z" and block_info["multiline"]:
-            fragments = extract_block_fragments(
-                code_lines, block_info["block_start"], block_info["block_end"]
-            )
-            fragment = find_block_fragment(fragments, source_literal, idx)
-
-            if fragment is None:
-                print(f"\n=== SKIP: multiline _Z block ===")
-                print(f"Fichier : {display_repo_path(file_path)}")
-                print(f"Ligne   : {idx + 1}")
-                print(f"Type    : {block_info['reason']}")
-                print(f"Source  : {source_inner}")
-                print("Action  : skip")
-                print()
-                stats["skipped"] += 1
-                continue
-
-            fragment_key = fragment["normalized_key"] or normalized_key
-            lang_preview = preview_lang_upsert(lang_target, fragment_key, english)
-            stats["multiline_Z_lang_only"] += 1
-            if lang_preview["state"] == "normalized-collision":
-                stats["en_conflicts"] += 1
-
-            skip_label = (
-                "SKIP: multiline _Z block (translations already present)"
-                if not lang_preview["changed"]
-                else "SKIP: multiline _Z block (code unchanged, en.txt entries pending)"
-            )
-
-            print(f"\n=== {skip_label} ===")
-            print(f"Fichier : {display_repo_path(file_path)}")
-            print(f"Ligne   : {fragment['line_number']}")
-            print("Code    : unchanged")
-            print()
-            print("=== Patch langue en.txt ===")
-            print(f"Clé source      : {fragment['raw_inner']}")
-            print(f"Clé normalisée  : {fragment_key}")
-            print(f"Entrée existante: {'oui' if lang_preview['matching_entries'] else 'non'}")
-            if lang_preview["matching_entries"]:
-                current_values = ", ".join(
-                    repr(entry["value"]) for entry in lang_preview["matching_entries"]
-                )
-                print(f"Valeur actuelle : {current_values}")
-            if lang_preview["norm_entries"] and not lang_preview["exact_entries"]:
-                current_norms = ", ".join(
-                    f"{entry['key']}={entry['value']}" for entry in lang_preview["norm_entries"]
-                )
-                print(f"Collision norm. : {current_norms}")
-            print(f"Valeur proposée : {english}")
-            if not lang_preview["changed"]:
-                print("État           : aucune entrée manquante")
-            elif lang_preview["state"] == "normalized-collision":
-                print("État           : collision normalisée possible")
-            elif lang_preview["state"] == "normalized-same":
-                print("État           : entrée normalisée déjà équivalente")
-            elif lang_preview["state"] == "exact-update":
-                print("État           : mise à jour d'une entrée existante")
-            else:
-                print("État           : ajout d'une entrée")
-            print()
-
-            if not lang_preview["changed"]:
-                stats["already_localized"] += 1
-                print("Aucun changement à appliquer, ligne ignorée.")
-                continue
-
-            # Les choix ici sont intentionnellement non persistants.
-            # Un skip/reject s'applique seulement à cette exécution; la batch
-            # est relue à chaque run pour recalculer l'état actuel.
-            while True:
-                try:
-                    action = input(
-                        "Action ? [y]es / [n]o / [s]kip / [e]dit english / [q]uit "
-                    ).strip().lower()
-                except EOFError:
-                    action = "q"
-
-                if action == "e":
-                    try:
-                        edited = input(f"Nouvelle traduction anglaise [{english}]: ").strip()
-                    except EOFError:
-                        edited = ""
-                    if edited:
-                        english = edited
-                        lang_preview = preview_lang_upsert(lang_target, fragment_key, english)
-                        if lang_preview["state"] == "normalized-collision":
-                            stats["en_conflicts"] += 1
-                        print()
-                        print("Traduction anglaise mise à jour.")
-                        print(f"Valeur proposée : {english}")
-                        print()
-                    continue
-
-                if action in {"s", "skip"}:
-                    stats["skipped"] += 1
-                    break
-
-                if action in {"n", "no"}:
-                    stats["rejected"] += 1
-                    break
-
-                if action in {"q", "quit"}:
-                    stats["quit"] = True
-                    break
-
-                if action in {"y", "yes", "o", "oui"}:
-                    if lang_preview["changed"]:
-                        apply_text_file_preview(
-                            lang_target, lang_preview["new_text"], lang_preview["encoding"]
-                        )
-
-                    stats["applied"] += 1
-                    break
-
-                print("Réponse attendue: y, n, s, e ou q.")
-
-        if stats["quit"]:
-            break
-
-            continue
-
-        if block_info["multiline"] and block_info["wrapper"] is None:
-            block_key = (file_path, block_info["block_start"], block_info["block_end"])
-            if block_key in processed_multiline_literal_blocks:
-                continue
-            processed_multiline_literal_blocks.add(block_key)
-
-            block_fragments = extract_block_fragments(
-                code_lines, block_info["block_start"], block_info["block_end"]
-            )
-            block_rows = []
-            row_by_line = {}
-            for candidate in ready_rows:
-                if candidate["batch_line"] in processed_multiline_literal_rows:
-                    continue
-                if candidate["file"] != row["file"]:
-                    continue
-                candidate_line = int(candidate["line"]) if candidate["line"].isdigit() else -1
-                if candidate_line > 0:
-                    row_by_line.setdefault(candidate_line, []).append(candidate)
-
-            for fragment in block_fragments:
-                fragment_line = fragment["line_number"]
-                matched_row = None
-                for candidate in row_by_line.get(fragment_line, []):
-                    candidate_source = (
-                        candidate["source"]
-                        if candidate["source"].startswith('"')
-                        else f'"{candidate["source"]}"'
-                    )
-                    if unquote_if_needed(candidate_source) == fragment["raw_inner"]:
-                        matched_row = candidate
-                        break
-                if matched_row is None:
-                    continue
-                block_rows.append(
-                    {
-                        "row": matched_row,
-                        "fragment": fragment,
-                    }
-                )
-
-            block_rows.sort(key=lambda item: item["fragment"]["line_index"])
-            if not block_rows:
-                continue
-
-            for item in block_rows:
-                processed_multiline_literal_rows.add(item["row"]["batch_line"])
-
-            fragment_entries = []
-            for item in block_rows:
-                fragment = item["fragment"]
-                fragment_preview = preview_lang_upsert(
-                    lang_target,
-                    fragment["normalized_key"],
-                    item["row"]["english"],
-                )
-                if fragment_preview["state"] == "normalized-collision":
-                    stats["en_conflicts"] += 1
-                fragment_entries.append(
-                    {
-                        "row": item["row"],
-                        "fragment": fragment,
-                        "preview": fragment_preview,
-                    }
-                )
-
-            old_block_text, new_block_line, code_changed, code_note = (
-                build_multiline_literal_block_preview(
-                    code_lines, block_info, block_fragments
-                )
-            )
-            block_source = "".join(fragment["raw_inner"] for fragment in block_fragments)
-            block_has_changes = code_changed or any(
-                entry["preview"]["changed"] for entry in fragment_entries
-            )
-
-            print(f"\n=== Patch code multiline literal block ===")
-            print(f"Fichier : {display_repo_path(file_path)}")
-            print(
-                f"Ligne   : {block_info['block_start'] + 1}-{block_info['block_end'] + 1}"
-            )
-            print()
-            print("AVANT :")
-            print(old_block_text)
-            print()
-            print("APRÈS :")
-            print(new_block_line)
-            print(f"État   : {code_note}")
-            print()
-
-            print("=== Patch langue en.txt ===")
-            print(f"Clé source      : {block_source}")
-            print(f"Fragments       : {len(fragment_entries)}")
-            for idx_entry, entry in enumerate(fragment_entries, 1):
-                preview = entry["preview"]
-                fragment = entry["fragment"]
-                print(f"- Fragment {idx_entry}/{len(fragment_entries)}")
-                print(f"  Clé source      : {fragment['raw_inner']}")
-                print(f"  Clé normalisée  : {fragment['normalized_key']}")
-                print(
-                    f"  Entrée existante: {'oui' if preview['matching_entries'] else 'non'}"
-                )
-                print(f"  Valeur proposée : {entry['row']['english']}")
-                if not preview["changed"]:
-                    print("  État           : aucun changement nécessaire")
-                elif preview["state"] == "normalized-collision":
-                    print("  État           : collision normalisée possible")
-                elif preview["state"] == "normalized-same":
-                    print("  État           : entrée normalisée déjà équivalente")
-                elif preview["state"] == "exact-update":
-                    print("  État           : mise à jour d'une entrée existante")
-                else:
-                    print("  État           : ajout d'une entrée")
-            print()
-
-            if not block_has_changes:
-                print("Aucun changement à appliquer, bloc ignoré.")
-                stats["skipped"] += 1
-                continue
-
-            # Les choix ici sont intentionnellement non persistants.
-            # Un skip/reject s'applique seulement à cette exécution; la batch
-            # est relue à chaque run pour recalculer l'état actuel.
-            while True:
-                try:
-                    action = input(
-                        "Action ? [y]es / [n]o / [s]kip / [e]dit english / [q]uit "
-                    ).strip().lower()
-                except EOFError:
-                    action = "q"
-
-                if action == "e":
-                    try:
-                        edited = input(
-                            "Nouvelle traduction anglaise pour le premier fragment [vide = conserver]: "
-                        ).strip()
-                    except EOFError:
-                        edited = ""
-                    if edited and fragment_entries:
-                        fragment_entries[0]["row"]["english"] = edited
-                        fragment_entries[0]["preview"] = preview_lang_upsert(
-                            lang_target,
-                            fragment_entries[0]["fragment"]["normalized_key"],
-                            edited,
-                        )
-                        if fragment_entries[0]["preview"]["state"] == "normalized-collision":
-                            stats["en_conflicts"] += 1
-                        print()
-                        print("Traduction anglaise mise à jour.")
-                        print(f"Valeur proposée : {edited}")
-                        print()
-                    continue
-
-                if action in {"s", "skip"}:
-                    stats["skipped"] += 1
-                    break
-
-                if action in {"n", "no"}:
-                    stats["rejected"] += 1
-                    break
-
-                if action in {"q", "quit"}:
-                    stats["quit"] = True
-                    break
-
-                if action in {"y", "yes", "o", "oui"}:
-                    if code_changed:
-                        new_code_lines = (
-                            code_lines[: block_info["block_start"]]
-                            + [new_block_line]
-                            + code_lines[block_info["block_end"] + 1 :]
-                        )
-                        new_code_text = "\n".join(new_code_lines)
-                        if code_text.endswith("\n"):
-                            new_code_text += "\n"
-                        apply_text_file_preview(file_path, new_code_text, code_enc)
-
-                    for entry in fragment_entries:
-                        fragment = entry["fragment"]
-                        row_english = entry["row"]["english"]
-                        fragment_preview = preview_lang_upsert(
-                            lang_target, fragment["normalized_key"], row_english
-                        )
-                        if fragment_preview["state"] == "normalized-collision":
-                            stats["en_conflicts"] += 1
-                        if fragment_preview["changed"]:
-                            apply_text_file_preview(
-                                lang_target,
-                                fragment_preview["new_text"],
-                                fragment_preview["encoding"],
-                            )
-
-                    stats["applied"] += 1
-                    break
-
-                print("Réponse attendue: y, n, s, e ou q.")
-
-            if stats["quit"]:
-                break
-
-            continue
-
         lang_preview = preview_lang_upsert(lang_target, normalized_key, english)
 
-        if not block_info["supported"]:
-            if block_info["wrapper"] == "_Z":
-                skip_label = "SKIP: multiline _Z block"
-                stats["skipped_multiline_Z"] += 1
-            elif block_info["wrapper"] == "_ZZ":
-                skip_label = "SKIP: _ZZ helper (non-translatable)"
-                stats["skipped_ZZ"] += 1
-            else:
-                skip_label = "SKIP: multiline literal block"
-                stats["skipped_multiline_literal"] += 1
-
-            print(f"\n=== {skip_label} ===")
-            print(f"Fichier : {display_repo_path(file_path)}")
-            print(f"Ligne   : {idx + 1}")
-            print(f"Type    : {block_info['reason']}")
-            print(f"Source  : {source_inner}")
-            print("Action  : skip")
-            print()
-            stats["skipped"] += 1
-            continue
-
-        source_is_z = block_info["wrapper"] == "_Z"
+        source_is_z = is_wrapped_by_z(old_line, source_literal)
         if source_is_z:
             if lang_preview["changed"]:
                 new_line, after_line, code_changed, code_note = build_z_code_patch_preview(
                     old_line, source_literal, normalized_key
                 )
             else:
-                new_line, after_line, code_changed, code_note = (
-                    old_line,
-                    old_line,
-                    False,
-                    "already localized (_Z)",
-                )
-                stats["already_localized"] += 1
+                new_line, after_line, code_changed, code_note = old_line, old_line, False, "already localized (_Z)"
         else:
-            if is_set_config_key_literal(code_lines, idx, source_literal):
-                new_line, after_line, code_changed, code_note = (
-                    old_line,
-                    old_line,
-                    False,
-                    "config key preserved",
-                )
-            else:
-                new_line, after_line, code_changed, code_note = build_code_patch_preview(
-                    old_line, source_literal, normalized_key
-                )
+            new_line, after_line, code_changed, code_note = build_code_patch_preview(
+                old_line, source_literal, normalized_key
+            )
 
         if lang_preview["state"] == "normalized-collision":
             stats["en_conflicts"] += 1
@@ -1589,17 +820,11 @@ def cmd_pseint_patcher(batchfile: str) -> int:
             print("État           : ajout d'une entrée")
         print()
 
-        if not code_changed and not lang_preview["changed"] and code_note.startswith("already localized"):
-            stats["already_localized"] += 1
-
         if not code_changed and not lang_preview["changed"]:
             print("Aucun changement à appliquer, ligne ignorée.")
             stats["skipped"] += 1
             continue
 
-        # Les choix ici sont intentionnellement non persistants.
-        # Un skip/reject s'applique seulement à cette exécution; la batch
-        # est relue à chaque run pour recalculer l'état actuel.
         while True:
             try:
                 action = input("Action ? [y]es / [n]o / [s]kip / [e]dit english / [q]uit ").strip().lower()
@@ -1657,13 +882,8 @@ def cmd_pseint_patcher(batchfile: str) -> int:
     print("=== Résumé patch ===")
     print(f"Lignes READY lues        : {stats['ready_read']}")
     print(f"Patches appliqués        : {stats['applied']}")
-    print(f"Skips total              : {stats['skipped']}")
-    print(f"  - multiline _Z         : {stats['skipped_multiline_Z']}")
-    print(f"  - _ZZ                  : {stats['skipped_ZZ']}")
-    print(f"  - multiline literal    : {stats['skipped_multiline_literal']}")
-    print(f"multiline_Z_lang_only    : {stats['multiline_Z_lang_only']}")
-    print(f"Already localized        : {stats['already_localized']}")
-    print(f"Rejets utilisateur       : {stats['rejected']}") 
+    print(f"Rejets utilisateur       : {stats['rejected']}")
+    print(f"Skips                    : {stats['skipped']}")
     print(f"Conflits en.txt          : {stats['en_conflicts']}")
     print(f"Occurrences introuvables : {stats['missing']}")
     print(f"Arrêt anticipé           : {'oui' if stats['quit'] else 'non'}")

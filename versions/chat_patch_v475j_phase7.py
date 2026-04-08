@@ -223,78 +223,8 @@ def make_extract_key(source_string: str) -> str:
     return strip_accents(source_string)
 
 
-def is_hard_technical_string(raw: str) -> bool:
-    if not raw:
-        return True
-
-    if raw.startswith(("http://", "https://", "ftp://", "www.")):
-        return True
-
-    if re.search(r"^[A-Za-z]:[\\/]", raw):
-        return True
-
-    if re.search(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,6}(?:[\\/]|$)", raw):
-        return True
-
-    if re.search(r"(?:[A-Za-z0-9_.-]+[\\/]){2,}[A-Za-z0-9_.-]*", raw):
-        return True
-
-    if "::" in raw or "->" in raw:
-        return True
-
-    if re.search(r"\b(?:TODO|TBD|FIXME|XXX+|DEBUG)\b", raw, re.I):
-        return True
-
-    if re.fullmatch(r"ver\d{6,}", raw, re.I):
-        return True
-
-    return False
-
-
-def is_text_like_default_value(raw: str) -> bool:
-    raw = raw.strip()
-    if not raw or is_hard_technical_string(raw):
-        return False
-
-    if re.search(r"\s", raw):
-        return True
-
-    if re.search(r"[áéíóúñ¿¡ÁÉÍÓÚÑ]", raw):
-        return True
-
-    if re.search(r"[.!?…]", raw):
-        return True
-
-    return len(raw) >= 12
-
-
-def is_whitespace_only_literal(raw: str) -> bool:
-    return re.fullmatch(r"(?:\s|\\[nrtfv])+?", raw) is not None
-
-
-def classify_literal_context(prefix: str) -> str | None:
-    stripped = prefix.rstrip()
-
-    if re.search(r"\bSetConfigStr\s*\(\s*$", stripped):
-        return "set_key"
-
-    if re.search(r"\bSetConfigStr\s*\([^,\n]*,\s*$", stripped):
-        return "set_value"
-
-    if re.search(r"\bGetConfigStr\s*\(\s*$", stripped):
-        return "lookup_key"
-
-    if re.search(
-        r"\bwx(?:MessageBox|MessageDialog|LogMessage|LogWarning|LogError|LogStatus)\s*\(\s*$",
-        stripped,
-    ):
-        return "ui_message"
-
-    return None
-
-
 def is_lookup_config_candidate(prefix: str) -> bool:
-    return classify_literal_context(prefix) == "lookup_key"
+    return re.search(r"\bGetConfigStr\s*\(\s*$", prefix.rstrip()) is not None
 
 
 def unquote_if_needed(s: str) -> str:
@@ -361,10 +291,28 @@ SPANISH_CUE_WORDS = {
 
 
 def is_technical_string(raw: str) -> bool:
-    if is_hard_technical_string(raw):
+    if not raw:
+        return True
+
+    if raw.startswith(("http://", "https://", "ftp://", "www.")):
+        return True
+
+    if re.search(r"^[A-Za-z]:[\\/]", raw):
+        return True
+
+    if re.search(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,6}(?:[\\/]|$)", raw):
+        return True
+
+    if re.search(r"(?:[A-Za-z0-9_.-]+[\\/]){2,}[A-Za-z0-9_.-]*", raw):
+        return True
+
+    if "::" in raw or "->" in raw:
         return True
 
     if re.fullmatch(r"[A-Za-z0-9_.-]+", raw):
+        return True
+
+    if re.search(r"\b(?:TODO|TBD|FIXME|XXX+|DEBUG)\b", raw, re.I):
         return True
 
     return False
@@ -588,8 +536,6 @@ def extract_strings_from_text(text: str, rel_file: str):
                 lines, block_info["block_start"], block_info["block_end"]
             )
             for fragment in block_fragments:
-                if is_whitespace_only_literal(fragment["raw_inner"]):
-                    continue
                 normalized = fragment["normalized_key"]
                 if normalized:
                     add_candidate(fragment["source"], normalized, fragment["line_number"])
@@ -600,9 +546,6 @@ def extract_strings_from_text(text: str, rel_file: str):
         raw_inner = literal["raw_inner"]
         line_no = literal["line"]
         prefix = literal["prefix"]
-
-        if is_whitespace_only_literal(raw_inner):
-            continue
 
         block_info = None
         line_idx = line_no - 1
@@ -629,8 +572,6 @@ def extract_strings_from_text(text: str, rel_file: str):
 
                 if block_info["wrapper"] == "_Z":
                     for fragment in block_fragments:
-                        if is_whitespace_only_literal(fragment["raw_inner"]):
-                            continue
                         normalized = fragment["normalized_key"]
                         if normalized:
                             add_candidate(
@@ -639,50 +580,10 @@ def extract_strings_from_text(text: str, rel_file: str):
                     continue
 
                 for fragment in block_fragments:
-                    if is_whitespace_only_literal(fragment["raw_inner"]):
-                        continue
                     normalized = fragment["normalized_key"]
                     if normalized:
                         add_candidate(fragment["source"], normalized, fragment["line_number"])
                 continue
-
-        context = classify_literal_context(prefix)
-
-        if context == "set_key":
-            if is_hard_technical_string(raw_inner):
-                continue
-            normalized = make_extract_key(raw_inner)
-            if not normalized:
-                continue
-            add_candidate(source, normalized, line_no)
-            continue
-
-        if context == "lookup_key":
-            if is_hard_technical_string(raw_inner):
-                continue
-            normalized = make_extract_key(raw_inner)
-            if not normalized:
-                continue
-            add_candidate(source, normalized, line_no)
-            continue
-
-        if context == "set_value":
-            if not is_text_like_default_value(raw_inner):
-                continue
-            normalized = make_extract_key(raw_inner)
-            if not normalized:
-                continue
-            add_candidate(source, normalized, line_no)
-            continue
-
-        if context == "ui_message":
-            if is_hard_technical_string(raw_inner):
-                continue
-            normalized = make_extract_key(raw_inner)
-            if not normalized:
-                continue
-            add_candidate(source, normalized, line_no)
-            continue
 
         if not is_lookup_config_candidate(prefix) and not is_likely_spanish_candidate(
             raw_inner, prefix=prefix
@@ -796,27 +697,6 @@ def build_z_code_patch_preview(line: str, source_literal: str, normalized_key: s
         return line, line, False, "no change"
 
     return line, new_line, True, "patched _Z"
-
-
-def is_set_config_key_literal(
-    code_lines: list[str], line_idx: int, source_literal: str, radius: int = 2
-) -> bool:
-    start = max(0, line_idx - radius)
-    end = min(len(code_lines), line_idx + radius + 1)
-    window = "\n".join(code_lines[start:end])
-
-    for match in re.finditer(r"\bSetConfigStr\s*\(", window):
-        call_start = match.end()
-        source_pos = window.find(source_literal, call_start)
-        if source_pos < 0:
-            continue
-
-        # If there is no comma before the literal, we are looking at the first
-        # argument of SetConfigStr(...). In that case the key must stay unchanged.
-        if "," not in window[call_start:source_pos]:
-            return True
-
-    return False
 
 
 def skip_ws_and_comments(lines: list[str], line_idx: int, col_idx: int):
@@ -1535,17 +1415,9 @@ def cmd_pseint_patcher(batchfile: str) -> int:
                 )
                 stats["already_localized"] += 1
         else:
-            if is_set_config_key_literal(code_lines, idx, source_literal):
-                new_line, after_line, code_changed, code_note = (
-                    old_line,
-                    old_line,
-                    False,
-                    "config key preserved",
-                )
-            else:
-                new_line, after_line, code_changed, code_note = build_code_patch_preview(
-                    old_line, source_literal, normalized_key
-                )
+            new_line, after_line, code_changed, code_note = build_code_patch_preview(
+                old_line, source_literal, normalized_key
+            )
 
         if lang_preview["state"] == "normalized-collision":
             stats["en_conflicts"] += 1
